@@ -1,0 +1,72 @@
+name: macos-upterm
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: "Repository to check out"
+        required: true
+        default: "NixOS/nixpkgs"
+      ref:
+        description: "Git ref (branch, tag, or commit)"
+        required: true
+        default: "master"
+      users:
+        description: "Comma-separated GitHub logins allowed to SSH (empty = the actor)"
+        required: false
+        default: ""
+      wait-timeout-minutes:
+        description: "Close the session if nobody connects"
+        required: false
+        default: "30"
+
+permissions:
+  contents: read
+
+jobs:
+  upterm:
+    runs-on: macos-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+            experimental-features = nix-command flakes
+
+      # upterm authenticates through GitHub; this file is only for a plain sshd.
+      - name: Configure SSH authorized keys
+        env:
+          SSH_AUTHORIZED_KEYS: ${{ secrets.SSH_AUTHORIZED_KEYS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          : > ~/.ssh/authorized_keys
+          if [ -n "${SSH_AUTHORIZED_KEYS:-}" ]; then
+            printf '%s\n' "$SSH_AUTHORIZED_KEYS" >> ~/.ssh/authorized_keys
+          else
+            curl -fsSL "https://github.com/${GITHUB_ACTOR}.keys" >> ~/.ssh/authorized_keys
+          fi
+          chmod 600 ~/.ssh/authorized_keys
+
+      - name: start upterm session (actor)
+        if: inputs.users == ''
+        uses: owenthereal/action-upterm@v2
+        with:
+          limit-access-to-actor: true
+          full-access: true
+          wait-timeout-minutes: ${{ inputs.wait-timeout-minutes }}
+
+      - name: start upterm session (users)
+        if: inputs.users != ''
+        uses: owenthereal/action-upterm@v2
+        with:
+          limit-access-to-users: ${{ inputs.users }}
+          full-access: true
+          wait-timeout-minutes: ${{ inputs.wait-timeout-minutes }}
