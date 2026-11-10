@@ -11,10 +11,22 @@ on:
         description: "Git ref (branch, tag, or commit)"
         required: true
         default: "master"
+      runner:
+        description: "macOS runner label"
+        required: true
+        default: "macos-latest"
       users:
         description: "Comma-separated GitHub logins allowed to SSH (empty = the actor)"
         required: false
         default: ""
+      checkout:
+        description: "Check out the repository"
+        type: boolean
+        default: true
+      install-nix:
+        description: "Install Nix"
+        type: boolean
+        default: true
       wait-timeout-minutes:
         description: "Close the session if nobody connects"
         required: false
@@ -25,17 +37,19 @@ permissions:
 
 jobs:
   upterm:
-    runs-on: macos-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 360
 
     steps:
       - uses: actions/checkout@v7
+        if: inputs.checkout
         with:
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
           fetch-depth: 1
 
       - uses: cachix/install-nix-action@v31
+        if: inputs.install-nix
         with:
           extra_nix_config: |
             accept-flake-config = true
@@ -56,17 +70,45 @@ jobs:
           chmod 600 ~/.ssh/authorized_keys
 
       - name: start upterm session (actor)
+        id: upterm-actor
         if: inputs.users == ''
         uses: owenthereal/action-upterm@v2
         with:
+          detached: true
           limit-access-to-actor: true
           full-access: true
           wait-timeout-minutes: ${{ inputs.wait-timeout-minutes }}
 
       - name: start upterm session (users)
+        id: upterm-users
         if: inputs.users != ''
         uses: owenthereal/action-upterm@v2
         with:
+          detached: true
           limit-access-to-users: ${{ inputs.users }}
           full-access: true
           wait-timeout-minutes: ${{ inputs.wait-timeout-minutes }}
+
+      - name: publish SSH config
+        env:
+          SSH_CONFIG_ACTOR: ${{ steps.upterm-actor.outputs.ssh-config }}
+          SSH_CONFIG_USERS: ${{ steps.upterm-users.outputs.ssh-config }}
+        run: |
+          config="${SSH_CONFIG_ACTOR:-$SSH_CONFIG_USERS}"
+          if [ -z "$config" ]; then
+            echo "no SSH config from upterm" >&2
+            exit 1
+          fi
+          printf '%s\n' "$config" > upterm-ssh-config.txt
+          {
+            echo "## upterm session"
+            echo '```sshconfig'
+            cat upterm-ssh-config.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: upterm-ssh-config
+          path: upterm-ssh-config.txt
+          if-no-files-found: error
